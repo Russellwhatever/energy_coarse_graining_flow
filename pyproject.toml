@@ -26,7 +26,7 @@ classifiers = [
 
 # --- Dependencies ---
 dependencies = [
-  "jax<=0.6.2",
+  "jax<=0.6.0",
   "flowjax>=17.2.0",
   "chemtrain[all] @ git+https://github.com/tummfm/chemtrain.git@jax-version",
 ]
