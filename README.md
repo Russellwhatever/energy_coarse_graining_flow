@@ -12,7 +12,7 @@ Implementation of the Energy-based Coarse-graining method with flows in the pape
 </p>
 
 ## Getting started
-This repository provides code for training a coarse-graining framework on the energy function of the Boltzmann distribution. The model separates the system into slow and fast variables, learns a normalizing flow to model the slow variables and a Gaussian distribution for the fast ones, and then uses a bijective map to transform them back to atomistic coordinates. The framework is demonstrated on three systems: a double-well (DW) potential, a Gaussian Mixture Model (GMM), and a coarse-grained alanine dipeptide (ALDP).
+This repository provides code for training a coarse-graining framework on the energy function of the Boltzmann distribution. The model separates the system into slow and fast variables, learns a normalizing flow to model the slow variables, a Gaussian distribution for the fast ones, and a bijective map to transform them back to atomistic coordinates. The framework is demonstrated on three systems: a double-well (DW) potential, a Gaussian Mixture Model (GMM), and a coarse-grained alanine dipeptide (ALDP).
 
 The training examples can be found in:
 
