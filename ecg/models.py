@@ -8,7 +8,7 @@ from flowjax import flows
 from flowjax.bijections import Chain, Exp, Indexed, Permute, \
                                RationalQuadraticSpline
 
-from ecg.bijections import SignFlip, StochasticLinearBijection, \
+from ecg.bijections import SignFlipIndexed, StochasticLinearBijection, \
                            StochasticLinearBijectionPerAtom
 from ecg.distributions import JointDistribution, JointModelTransformed, \
                               MLPConditionalNormal, TruncatedNormal
@@ -20,7 +20,6 @@ from jaxtyping import Array, Int, PRNGKeyArray
 def initialize_model(dimensions: Dimensions,
                      Phi_init: Array,
                      key: PRNGKeyArray = random.key(0),
-                     load_params_path: str | None = None,
                      flow_layers: int = 6,
                      nn_depth: int = 2,
                      nn_width: int = 32,
@@ -30,7 +29,8 @@ def initialize_model(dimensions: Dimensions,
                      cond_nn_width: int = 32,
                      perm_idxs: Int[Array | np.ndarray, '...'] | None = None,
                      restrain_idxs: int | Array | tuple | None = None,
-                     per_atom: bool = False
+                     per_atom: bool = False,
+                     load_params_path: str | None = None,
                      ) -> JointModelTransformed:
     """Initialize model components for flow, conditional distribution, and
     linear transformation, and return combined model.
@@ -89,7 +89,7 @@ def initialize_model(dimensions: Dimensions,
                                                         interval=interval))
 
     if per_atom:
-        #TODO: future: calculate remove row ids from fix_coords_idxs
+        #TODO: calculate remove row ids from fix_coords_idxs
         remove_idxs = jnp.array([6,8,10], dtype=jnp.int32)
         transformation = StochasticLinearBijectionPerAtom(
             init=Phi_init, remove_rows_idxs=remove_idxs)
@@ -115,10 +115,9 @@ def initialize_model(dimensions: Dimensions,
     if restrain_idxs is not None:
         indexed_shape = jnp.asarray(restrain_idxs).shape
         indexed_bijection = Indexed(Chain([Exp(indexed_shape),
-                                        SignFlip(indexed_shape)]),
+                                        SignFlipIndexed(restrain_idxs)]),
                                     idxs=restrain_idxs,
                                     shape=(dimensions.x_dim,))
-        #TODO: use restrain_idxs to indicate sign
         bijections.append(paramax.non_trainable(indexed_bijection))
 
     model = JointModelTransformed(base_dist=joint_dist,

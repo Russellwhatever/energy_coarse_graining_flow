@@ -115,6 +115,8 @@ def create_marginals_plots(
     ref_samples: Array | None = None,
     reference: Array | None = None,
     labels: Sequence[str] | None = None,
+    cut: float | None = None,
+    x_lim: tuple[float, float] | None = None,
     y_lim: tuple[float, float] | None = None,
     axis_label_pattern: str | None = None,
     single_axis_labels: Sequence[str] | None = None,
@@ -124,6 +126,7 @@ def create_marginals_plots(
     labelsize: int = 10,
     loc: str = 'upper right',
     wspace: float = 0.2,
+    hspace: float = 0.2,
     bins: str | int = 'auto',
 ):
     """
@@ -142,7 +145,10 @@ def create_marginals_plots(
     if ref_samples is not None and ref_samples.ndim == 1:
         ref_samples = jnp.expand_dims(ref_samples, axis=-1)
 
-    dim = samples.shape[1]
+    if cut is not None:
+        cutoff = jnp.percentile(samples, cut)
+
+    dim = samples.shape[1] if samples.ndim > 1 else 1
     axes = axes.flatten()
 
     for i in range(dim):
@@ -154,7 +160,7 @@ def create_marginals_plots(
             density=True,
             range=(
                 np.min(data_i),
-                np.max(data_i),
+                cutoff if cut is not None else np.max(data_i),
             ),
         )
         axes[i].stairs(hist, edge_bins, linewidth=2.0, color='tab:blue')
@@ -186,7 +192,7 @@ def create_marginals_plots(
         if single_axis_labels is not None:
             if i == 0:
                 axes[i].set_ylabel(single_axis_labels[1], fontsize=fontsize)
-            elif i == dim - 1:
+            if i == dim - 1:
                 axes[i].set_xlabel(single_axis_labels[0], fontsize=fontsize)
 
         if axis_label_pattern is not None:
@@ -199,6 +205,9 @@ def create_marginals_plots(
 
         if y_lim:
             axes[i].set_ylim(y_lim[0], y_lim[1])
+        
+        if x_lim:
+            axes[i].set_xlim(x_lim[0], x_lim[1])
 
     for k in range(dim, len(axes)):
         axes[k].axis('off')
@@ -210,7 +219,7 @@ def create_marginals_plots(
                 fontsize=fontsize,
                 legend_axis=legend_axis)
 
-    plt.subplots_adjust(wspace=wspace)
+    plt.subplots_adjust(wspace=wspace, hspace=hspace)
 
 
 def plot_energy_marginals(model: JointDistribution,
@@ -264,14 +273,16 @@ def plot_energy_marginals(model: JointDistribution,
 def plot_marginals(samples: Array,
                    ref_samples: Array | None = None,
                    bins: str | int = 50,
+                   cut: float | None = None,
                    axis_label_pattern: str | None = None,
                    single_axis_labels: Sequence[str] | None = None,
                    titles: Sequence[str] | None = None,
+                   loc: str = 'upper left',
                    save_name: str | None = None,
                    folder_name: str | None = None,
                    ):
 
-    n_dims = samples.shape[1]
+    n_dims = samples.shape[1] if samples.ndim > 1 else 1
     n_cols = int(np.ceil(np.sqrt(n_dims)))
     n_rows = int(np.ceil(n_dims / n_cols))
 
@@ -287,13 +298,15 @@ def plot_marginals(samples: Array,
         samples,
         ref_samples=ref_samples,
         bins=bins,
+        cut=cut,
         axis_label_pattern=axis_label_pattern,
         single_axis_labels=single_axis_labels,
         titles=titles,
         fontsize=16,
         labelsize=16,
         wspace=0.3,
-        loc='upper left',
+        hspace=0.3,
+        loc=loc,
     )
 
     plot_save(fig,
@@ -643,8 +656,10 @@ def plot_rama(list_angles: list[Array],
 
     images = []
     for i in range(n_plots):
-        h, x_edges, y_edges  = jnp.histogram2d(
-            list_angles[i][:, 0], list_angles[i][:, 1], bins=60, density=True)
+        mask = np.isfinite(list_angles[i]).all(axis=1)
+        angles = list_angles[i][mask]
+        h, x_edges, y_edges  = np.histogram2d(
+            angles[:, 0], angles[:, 1], bins=60, density=True)
         h_masked = np.where(h == 0, np.nan, h)
         x, y = np.meshgrid(x_edges, y_edges)
         images.append(axs[i].pcolormesh(x,y,h_masked.T, cmap=cmap))
@@ -668,7 +683,7 @@ def plot_rama(list_angles: list[Array],
               folder_name=folder_name)
 
 
-def plot_1d_dihedrals(list_angles: Sequence[Array],
+def plot_1d_dihedrals(list_angles: list[Array],
                       labels: Sequence[str] | None = None,
                       colors: Sequence[ColorType] | None = None,
                       linestyle: Sequence[LineStyleType] | None = None,
@@ -744,5 +759,5 @@ def plot_1d_dihedrals(list_angles: Sequence[Array],
                                 fontsize=fontsize)
 
     plot_save(fig,
-              save_name='1D_dihedral_'+save_name if save_name else None,
+              save_name='Dihedral_1D_'+save_name if save_name else None,
               folder_name=folder_name)

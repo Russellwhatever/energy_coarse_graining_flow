@@ -12,8 +12,8 @@ from flowjax.distributions import AbstractDistribution, \
 from sklearn.datasets import make_blobs
 
 from ecg.targets.base import Target
-from ecg.distributions import GaussianMixture, JointDistribution, \
-                              JointModelTransformed
+from ecg.distributions import GaussianMixture, GaussianMixtureWithParams, \
+                              JointDistribution, JointModelTransformed
 from ecg.visualization import plot_marginals, plot_matrix, \
                               plot_contour_and_samples
 
@@ -55,7 +55,7 @@ class GMM(Target):
     normal distribution and the covariance :math:`S = \mathrm{diag}(0.01)`.
     """
     joint_dist: JointDistribution
-    gmm: AbstractDistribution
+    gmm: GaussianMixtureWithParams
     cond_dist: AbstractDistribution
     cluster_components: int
     cluster_std: float

@@ -5,9 +5,9 @@ from jax import random, nn, numpy as jnp
 from jax.scipy.stats import truncnorm
 
 import equinox as eqx
-import paramax
+from paramax import unwrap
 
-from flowjax.bijections import AbstractBijection
+from flowjax.bijections import Chain
 from flowjax.distributions import AbstractDistribution, AbstractTransformed, \
                                   MultivariateNormal, VmapMixture, \
                                   StandardNormal
@@ -166,15 +166,21 @@ class JointDistribution(AbstractDistribution):
 
 
 class JointModelTransformed(AbstractTransformed):
-    """Flowjax.distribution.Transformed with extra functionality:
-        - Option to obtain splitted samples from a transformed joint
+    """Flowjax.distribution.Transformed for JointDistribution and Chain 
+       bijection:
+        - Obtain splitted samples zX = [z, X] from a transformed joint
         distribution after the bijection.
-        - Option to load and save parameters.
+        - Load and save parameters.
         - Accessors for linear transformation matrix A and its inverse A^{-1}.
     """
 
     base_dist: JointDistribution
-    bijection: AbstractBijection
+    bijection: Chain
+
+    # manual init because Pylance doesn't understand AbstractVar
+    def __init__(self, base_dist: JointDistribution, bijection: Chain):
+        self.base_dist = base_dist
+        self.bijection = bijection
 
     def sample_and_split(self,
                          key: PRNGKeyArray,
@@ -203,12 +209,12 @@ class JointModelTransformed(AbstractTransformed):
     @property
     def matrix(self) -> Array:
         """Return the linear transformation matrix A."""
-        return paramax.unwrap(self.bijection.bijections[0]).matrix
+        return unwrap(self.bijection.bijections[0]).matrix
 
     @property
     def inv_matrix(self) -> Array:
         """Return the inverse linear transformation matrix A^{-1}."""
-        return paramax.unwrap(self.bijection.bijections[0]).inv_matrix
+        return unwrap(self.bijection.bijections[0]).inv_matrix
 
 
 class GaussianMixtureWithParams(VmapMixture):
@@ -222,13 +228,13 @@ class GaussianMixtureWithParams(VmapMixture):
     @property
     def covariances(self):
         """Return component covariance matrices (n_components, dim, dim)."""
-        chol = paramax.unwrap(self.dist.bijection.triangular)
+        chol = unwrap(self.dist.bijection.triangular)
         return chol @ jnp.swapaxes(chol, -1, -2)
 
     @property
     def weights(self):
         """Return normalized mixture weights (n_components,)."""
-        log_w = paramax.unwrap(self.log_normalized_weights)
+        log_w = unwrap(self.log_normalized_weights)
         return jnp.exp(log_w)
 
 

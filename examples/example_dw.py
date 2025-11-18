@@ -57,11 +57,16 @@ temp_dict = {
 # Save path inputs:
 save_params_path = f'outputs/trained_parameter/{folder_name}'
 load_params_path = None
+
 create_output_dirs(
     folder_name,
     save_params_path,
-    subdirs=['energy_marginals', 'histograms', 'kl', 'losses']
+    subdirs=['energy_marginals',
+             'histograms',
+             'kl',
+             'losses']
 )
+
 key = random.key(seed)
 target = DoubleWell()
 key, init_model_key, init_eval_key = random.split(key, 3)
@@ -72,6 +77,8 @@ model = initialize_model(dimensions,
                          flow_layers=layers,
                          nn_depth=nn_depth,
                          nn_width=nn_width,
+                         cond_nn_depth=cond_nn_depth,
+                         cond_nn_width=cond_nn_width,
                          knots=knots,
                          interval=interval,
                          load_params_path=load_params_path,
@@ -83,8 +90,9 @@ params, static = eqx.partition(
     is_leaf=lambda leaf: isinstance(leaf, paramax.NonTrainable),
     )
 
-param_count = sum(x.size for x in tree.leaves(params))
-print('Number of parameters:', param_count)
+params_count = sum(x.size for x in tree.leaves(params))
+print('Number of parameters:', params_count)
+
 target.plot(model,
             init_eval_key,
             start_beta,
@@ -104,8 +112,8 @@ Tempering = TemperingScheme(start_beta,
 losses = []
 grad_norms = []
 phi_params = []
-
 opt_state = optimizer.init(params)
+
 print('energy training')
 beta = start_beta
 
@@ -155,6 +163,7 @@ for i, _ in enumerate(Tempering.loop()):
 
 if folder_name is not None:
     model.save(save_params_path+f'model_params_{beta:.5f}beta.eqx')
+
 plt.figure()
 plt.plot(losses)
 plt.yscale('symlog')
@@ -162,6 +171,7 @@ plt.xlabel('Epoch')
 plt.ylabel('Loss')
 if folder_name is not None:
     plt.savefig(f'outputs/figures/{folder_name}losses/Loss.png')
+
 plt.figure()
 plt.plot(grad_norms)
 plt.yscale('symlog')
@@ -169,6 +179,7 @@ plt.xlabel('Epoch')
 plt.ylabel('Gradient Norm')
 if folder_name is not None:
     plt.savefig(f'outputs/figures/{folder_name}losses/Grad_norm.png')
+
 key, final_eval_key = random.split(key, 2)
 target.plot(model,
             final_eval_key,
@@ -176,6 +187,7 @@ target.plot(model,
             bij_params=phi_params,
             save_name='final',
             folder_name=folder_name)
+
 inv_matrix = model.inv_matrix
 
 print(

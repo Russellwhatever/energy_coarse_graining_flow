@@ -60,7 +60,7 @@ class DoubleWell(Target):
         return self._log_Z_x1(beta) + self._log_Z_x2(beta)
 
     def p_x(self, x: Array, beta: Float=1.) -> Array:
-        return jnp.exp(-beta * self.energy(x) - self._log_Z(beta))
+        return jnp.exp(-beta * self.energy(x) - self.log_Z(beta))
 
     def p_x1(self, x_1: Array, beta: Float=1.) -> Array:
         return jnp.exp(-beta * self.energy_x1(x_1) - self._log_Z_x1(beta))

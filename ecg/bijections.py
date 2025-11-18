@@ -15,7 +15,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 
 class StochasticLinearBijection(AbstractBijection):
-    """Stochastic linear bijection with softmax constraint on rows.
+    r"""Stochastic linear bijection with softmax constraint on rows.
     The linear transformation matrix :math:`A` is parameterized as a
     softmax over unconstrained parameters :math:`A'`:
   
@@ -120,7 +120,7 @@ class AffineMLP(AbstractBijection):
 
     def inverse_and_log_det(self, y, condition):
         loc, log_scale = self.loc_and_log_scale(condition)
-        return (y - loc) / jnp.exp(log_scale), - log_scale.sum()   
+        return (y - loc) / jnp.exp(log_scale), - log_scale.sum()
 
     def loc_and_log_scale(self, condition):
         affine_params = self.conditioner(condition)
@@ -129,9 +129,32 @@ class AffineMLP(AbstractBijection):
 
 
 class StochasticLinearBijectionPerAtom(AbstractBijection):
-    """
-    Stochastic linear bijection with softmax constraint on rows, applied per 
-    atom.
+    r"""
+    Stochastic linear bijection implementing the pseudo-atom map :math:`A`
+    described in the paper (Eqs. 10–11).
+
+    This bijection constructs the linear transformation that maps slow 
+    :math:`z` and fast :math:`X` pseudo-atoms coordinates (3m) to all-atom 
+    :math:`x \in \mathbb{R}^{3n}` through a per-atom stochastic matrix.
+
+    Learnable parameters :math:`A'` are converted to a row-stochastic matrix 
+    via a softmax,
+
+    .. math::
+        A_{ij} = \frac{\exp(A'_{ij})}{\sum_{k} \exp(A'_{ik})}.,
+
+    so that each pseudo-atom is a convex combination of the original atoms.
+
+    Init matrix is based on the number of atoms, pseudo-atoms, and removed 
+    fixed coordinates.
+
+    rows: number of atoms :math:`n` - fully removed atoms
+    cols: number pseudo-atoms :math:`m`
+
+    Args:
+        init: Parameter matrix :math:`A'`.
+        remove_rows_idxs: Optional integer array specifying rows of the expanded
+            :math:`\tilde{A}` to remove to accommodate fixed coordinates.
     """
 
     params: Array
@@ -140,9 +163,7 @@ class StochasticLinearBijectionPerAtom(AbstractBijection):
     cond_shape: None = None
     remove_rows_idxs: Array | None = None
 
-    #TODO: future: add a way to directly import and use matrix from fix_coords
-    #TODO: combine with other StochasticLinearBijection, add docstring
-    #TODO: check shape init, remove idxs
+    #TODO: add a function to directly import and use matrix from fix_coords
     def __init__(self,
                  init: Array,
                  remove_rows_idxs: Array | None = None
@@ -200,7 +221,37 @@ class SignFlip(AbstractBijection):
     cond_shape: ClassVar[None] = None
 
     def transform_and_log_det(self, x, condition=None):
-        return -x, jnp.zeros(())
+        return jnp.negative(x), jnp.zeros(())
 
     def inverse_and_log_det(self, y, condition=None):
-        return -y, jnp.zeros(())
+        return jnp.negative(y), jnp.zeros(())
+
+
+class SignFlipIndexed(AbstractBijection):
+    """Indexed sign-flip bijection initialized from an index/sign array.
+
+    The bijection uses the provided `idxs` argument to determine the sign 
+    vector.
+
+    Args:
+        idxs: Indices or signs (Integer, a slice, or an ndarray with 
+        integer/bool dtype) used to compute per-element signs.
+    """
+
+    signs: int | slice | Array | tuple
+    shape: tuple[int, ...]
+    cond_shape: ClassVar[None] = None
+
+    def __init__(self,
+                 idxs: int | slice | Array | tuple,
+                 ):
+        arr = jnp.asarray(idxs)
+        signs = jnp.sign(arr)
+        self.signs = signs
+        self.shape = arr.shape
+
+    def transform_and_log_det(self, x: Array, condition=None):
+        return self.signs * x, jnp.zeros(())
+
+    def inverse_and_log_det(self, y: Array, condition=None):
+        return self.signs * y, jnp.zeros(())

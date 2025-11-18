@@ -1,196 +1,880 @@
-"""Prior potentials for interatomic potentials from 
-https://github.com/tummfm/relative-entropy."""
+# Modified version of jax_md_mod.model.prior.py from Chemtrain
+# (https://github.com/tummfm/chemtrain)
+# Original code copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+# Licensed under the Apache License, Version 2.0:
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Modifications made by Maximilian Stupp, 2025:
+# - Fixed dihedral mask in Topology.prune_topology
+# - Added get_improper_params to ForceField
+# - Added get_impropers to Topology
+# - Added improper potential to init_prior_potential
+# - Added optional _names attribute to Topology class to store particle names
+"""Addition to chemtrain's jax_md_mod.model.prior.py at
+https://github.com/tummfm/chemtrain. This module provides a simple classical 
+force-field with pairwise non-bonded interactions and bonded, angular,
+dihedral, and now also improper interactions.
+"""
+import importlib
+import itertools
+from io import StringIO
+
+import jax
 import jax.numpy as jnp
+import numpy as onp
+from jax import tree_util
 
-import numpy as np
-
-from jax_md_mod import custom_energy
-from jax_md import energy
+from jax_md_mod.model import prior, sparse_graph
 
 from ecg.chemtrain_mod.custom_energy import harmonic_dihedral
 
-
-def select_protein(protein, prior_list):
-    idxs = {}
-    constants = {}
-    if protein == 'heavy_alanine_dipeptide':
-        print('Distinguishing different C_Hx atoms')
-        species = jnp.array([6, 1, 8, 7, 2, 6, 1, 8, 7, 6])
-        if 'bond' in prior_list:
-            bond_mean = np.load('data/prior/Alanine_dipeptide_heavy_eq_bond'
-                                 '_length.npy')
-            bond_variance = np.load('data/prior/Alanine_dipeptide_heavy_eq'
-                                     '_bond_variance.npy')
-            bond_idxs = np.array([[0, 1],
-                                   [1, 2],
-                                   [1, 3],
-                                   [4, 6],
-                                   [6, 7],
-                                   [4, 5],
-                                   [3, 4],
-                                   [6, 8],
-                                   [8, 9]])
-            idxs['bond'] = bond_idxs
-            constants['bond'] = (bond_mean, bond_variance)
-
-        if 'angle' in prior_list:
-            angle_mean = np.load('data/prior/Alanine_dipeptide_heavy_eq'
-                                  '_angle.npy')
-            angle_variance = np.load('data/prior/Alanine_dipeptide_heavy_eq'
-                                      '_angle_variance.npy')
-            angle_idxs = np.array([[0, 1, 2],
-                                    [0, 1, 3],
-                                    [2, 1, 3],
-                                    [1, 3, 4],
-                                    [3, 4, 5],
-                                    [3, 4, 6],
-                                    [5, 4, 6],
-                                    [4, 6, 7],
-                                    [4, 6, 8],
-                                    [7, 6, 8],
-                                    [6, 8, 9]])
-            idxs['angle'] = angle_idxs
-            constants['angle'] = (angle_mean, angle_variance)
-
-        if 'LJ' in prior_list:
-            lj_sigma = np.load('data/prior/Alanine_dipeptide_heavy_sigma.npy')
-            lj_epsilon = np.load('data/prior/Alanine_dipeptide_heavy_'
-                                  'epsilon.npy')
-            lj_idxs = np.array([[0, 5],
-                                 [0, 6],
-                                 [0, 7],
-                                 [0, 8],
-                                 [0, 9],
-                                 [1, 7],
-                                 [1, 8],
-                                 [1, 9],
-                                 [2, 5],
-                                 [2, 6],
-                                 [2, 7],
-                                 [2, 8],
-                                 [2, 9],
-                                 [3, 9],
-                                 [5, 9]])
-            idxs['LJ'] = lj_idxs
-            constants['LJ'] = (lj_sigma, lj_epsilon)
-
-        if 'dihedral' in prior_list:
-            dihedral_phase = np.load('data/prior/Alanine_dipeptide_heavy_'
-                                      'dihedral_phase.npy')
-            dihedral_constant = np.load('data/prior/Alanine_dipeptide_heavy'
-                                         '_dihedral_constant.npy')
-            dihedral_n = np.load('data/prior/Alanine_dipeptide_heavy_dihedral'
-                                  '_multiplicity.npy')
-
-            dihedral_idxs = np.array([[1, 3, 4, 6],
-                                       [3, 4, 6, 8],
-                                       [0, 1, 3, 4],
-                                       [2, 1, 3, 4],
-                                       [1, 3, 4, 5],
-                                       [5, 4, 6, 8],
-                                       [4, 6, 8, 9],
-                                       [7, 6, 8, 9]])
-            idxs['dihedral'] = dihedral_idxs
-            constants['dihedral'] = (dihedral_phase, dihedral_constant,
-                                     dihedral_n)
-
-        if 'repulsive_nonbonded' in prior_list:
-            # repulsive part of the LJ
-            if 'LJ' in prior_list:
-                raise ValueError('Not sensible to have LJ and repulsive part of'
-                                 ' LJ together. Choose one.')
-            ren_sigma = np.load('data/prior/Alanine_dipeptide_heavy_sigma.npy')
-            ren_epsilon = np.load('data/prior/Alanine_dipeptide'
-                                   '_heavy_epsilon.npy')
-            ren_idxs = np.array([[0, 5],
-                                  [0, 6],
-                                  [0, 7],
-                                  [0, 8],
-                                  [0, 9],
-                                  [1, 7],
-                                  [1, 8],
-                                  [1, 9],
-                                  [2, 5],
-                                  [2, 6],
-                                  [2, 7],
-                                  [2, 8],
-                                  [2, 9],
-                                  [3, 9],
-                                  [5, 9]])
-            idxs['repulsive_nonbonded'] = ren_idxs
-            constants['repulsive_nonbonded'] = (ren_sigma, ren_epsilon)
-
-        if 'improper' in prior_list:
-            improper_mean = np.load('data/prior/Alanine_dipeptide_heavy_eq'
-                                  '_improper.npy')
-            improper_variance = np.load('data/prior/Alanine_dipeptide_heavy_eq'
-                                      '_improper_variance.npy')
-            improper_idxs = np.array([[3, 4, 6, 5]], dtype=jnp.int32)
-
-            idxs['improper'] = improper_idxs
-            constants['improper'] = (improper_mean, improper_variance)
-    else:
-        raise ValueError(f'The protein {protein} is not implemented.')
-    return species, idxs, constants
+from typing import List, Tuple, Union
+from jaxtyping import ArrayLike
 
 
-def select_priors(displacement, prior_constants, prior_idxs, kbt=None):
-    """Build prior potential from combination of classical potentials."""
-    prior_fns = {}
-    if 'bond' in prior_constants:
-        assert kbt is not None, 'Need to provide kbT for bond prior.'
-        bond_mean, bond_variance = prior_constants['bond']
-        bonds = prior_idxs['bond']
-        prior_fns['bond'] = energy.simple_spring_bond(
-            displacement, bonds, length=bond_mean, epsilon=kbt / bond_variance)
+@tree_util.register_pytree_node_class
+class ForceField:
+    """Parameter set for classical molecular dynamics potentials.
 
-    if 'angle' in prior_constants:
-        assert kbt is not None, 'Need to provide kbT for angle prior.'
-        angle_mean, angle_variance = prior_constants['angle']
-        angles = prior_idxs['angle']
-        prior_fns['angle'] = custom_energy.harmonic_angle(
-            displacement, angles, angle_mean, angle_variance, kbt)
+    This class simplifies access to classical molecular dynamics potential
+    parameters. This class is registered as a pytree with parameters as leaves,
+    thus enable computing gradients with respect to the force field parameters.
 
-    if 'LJ' in prior_constants:
-        lj_sigma, lj_epsilon = prior_constants['LJ']
-        lj_idxs = prior_idxs['LJ']
-        prior_fns['LJ'] = custom_energy.lennard_jones_nonbond(
-            displacement, lj_idxs, lj_sigma, lj_epsilon)
+    To construct a force field from a TOML file, see :func:`ForceField.load_ff`.
 
-    if 'repulsive' in prior_constants:
-        re_sigma, re_epsilon, re_cut, re_exp = prior_constants['repulsive']
-        prior_fns['repulsive'] = custom_energy.generic_repulsion_neighborlist(
-            displacement, sigma=re_sigma, epsilon=re_epsilon, exp=re_exp,
-            initialize_neighbor_list=False, r_onset=0.9 * re_cut,
-            r_cutoff=re_cut)
+    """
 
-    if 'dihedral' in prior_constants:
-        dih_phase, dih_constant, dih_n = prior_constants['dihedral']
-        dihdral_idxs = prior_idxs['dihedral']
-        prior_fns['dihedral'] = custom_energy.periodic_dihedral(
-            displacement, dihdral_idxs, dih_phase, dih_constant, dih_n)
+    def __init__(self, data=None, lookup=None, mapping=None):
+        self._data = data
+        self._mapping = mapping
+        self._lookup = lookup
 
-    if 'repulsive_nonbonded' in prior_constants:
-        # only repulsive part of LJ via idxs instead of nbrs list
-        ren_sigma, ren_epsilon = prior_constants['repulsive_nonbonded']
-        ren_idxs = prior_idxs['repulsive_nonbonded']
-        prior_fns['repulsive_1_4'] = custom_energy.generic_repulsion_nonbond(
-            displacement, ren_idxs, sigma=ren_sigma, epsilon=ren_epsilon, exp=6)
+    @classmethod
+    def load_ff(cls, fname: str):
+        """Loads a force field from a toml file.
 
-    if 'improper' in prior_constants:
-        assert kbt is not None, 'Need to provide kbT for angle prior.'
-        improper_mean, improper_variance = prior_constants['improper']
-        improper_idx = prior_idxs['improper']
-        prior_fns['improper'] = harmonic_dihedral(
-            displacement, improper_idx, improper_mean, improper_variance, kbt)
-    return prior_fns
+        This is the recommended way to create a force field.
+
+        Args:
+            fname: Force field parameter file
+
+        Returns:
+            Returns a force field instance with parameters read from the file.
+
+        """
+        tomli = importlib.import_module("tomli")
+
+        data = {
+            "nonbonded": None,
+            "bonded": {}
+        }
+
+        lookup = {
+            "nonbonded": None,
+            "bonded": {}
+        }
+
+        with open(fname, "rb") as f:
+            ff = tomli.load(f)
+
+        # Parse the contents using numpy
+        non_bonded = onp.genfromtxt(
+            StringIO(ff["nonbonded"]["atomtypes"]),
+            dtype=None, delimiter=",", encoding="UTF-8"
+        )
+
+        mapping = {
+            name: index for name, index, *_ in
+            non_bonded
+        }
+
+        num_species = max(mapping.values()) + 1
+
+        # Create lookup matrices. Entries unspecified by the force field
+        # are assigned a lookup index of -1. This enables to mask out
+        # not existing parametrizations.
+        nonbonded_lookup = onp.full(num_species, -1, dtype=int)
+        nonbonded_data = onp.zeros((num_species, 3))
+        for idx, particle in enumerate(non_bonded):
+            i, _, *params = particle
+            s = mapping[i]
+            nonbonded_lookup[s] = idx
+            nonbonded_data[idx, :] = onp.asarray(params)
+
+        data["nonbonded"] = jnp.asarray(nonbonded_data)
+        lookup["nonbonded"] = jnp.asarray(nonbonded_lookup)
+
+        bonds = onp.genfromtxt(
+            StringIO(ff["bonded"]["bondtypes"]),
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True,
+            comments="#"
+        ).reshape((-1,))
+
+        # Fill up to indicate which bonds are not provided by the force field
+        bond_lookup = onp.full(
+            (num_species, num_species), -1, dtype=int)
+        bond_data = onp.zeros((max([len(bonds), 1]), 2))
+        for idx, bond in enumerate(bonds):
+            i, j, *params = bond
+            s1 = mapping[i]
+            s2 = mapping[j]
+
+            bond_lookup[s1, s2] = idx
+            bond_lookup[s2, s1] = idx
+            bond_data[idx, :] = onp.asarray(params)
+
+        data["bonded"]["bonds"] = jnp.asarray(bond_data)
+        lookup["bonded"]["bonds"] = jnp.asarray(bond_lookup)
+
+        angles = onp.genfromtxt(
+            StringIO(ff["bonded"]["angletypes"]),
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+        ).reshape((-1,))
+
+        angle_lookup = onp.full(
+            (num_species, num_species, num_species), -1, dtype=int)
+        angle_data = onp.zeros((max([len(angles), 1]), 2))
+        for idx, angle in enumerate(angles):
+            i, j, k, *params = angle
+            s1 = mapping[i]
+            s2 = mapping[j]
+            s3 = mapping[k]
+
+            angle_lookup[s1, s2, s3] = idx
+            angle_lookup[s3, s2, s1] = idx
+            angle_data[idx, :] = onp.asarray(params)
+
+        data["bonded"]["angles"] = jnp.asarray(angle_data)
+        lookup["bonded"]["angles"] = jnp.asarray(angle_lookup)
+
+        # Maximum number of dihedral terms
+        max_terms = 4
+        dihedrals = onp.genfromtxt(
+            StringIO(ff["bonded"]["dihedraltypes"]),
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+        ).reshape((-1,))
+
+        dihedrals_lookup = onp.full(
+            (num_species, num_species, num_species, num_species, max_terms), -1, dtype=int)
+        dihedral_data = onp.zeros((max([len(dihedrals), 1]), 1))
+        for idx, dihedral in enumerate(dihedrals):
+            i, j, k, l, phase, kd, nd = dihedral
+            s1 = mapping[i]
+            s2 = mapping[j]
+            s3 = mapping[k]
+            s4 = mapping[l]
+
+            dihedrals_lookup[s1, s2, s3, s4, nd - 1] = idx
+            dihedrals_lookup[s4, s3, s2, s1, nd - 1] = idx
+
+            # We assume that the phase shift only assumes values of multiples of
+            # pi (i.e. 0 or 180 deg). To simply learn the phase shift, we
+            # reformulate the dihedral potential function from
+            # kd * (1 + cos(psi - phase)) to |kd| + kd * cos(psi) and choose
+            # kd < 0 for a phase shift of 180.0 deg and kd > 0 otherwise.
+
+            if phase >= 90.:
+                dihedral_data[idx, :] = -onp.asarray(kd)
+            else:
+                dihedral_data[idx, :] = onp.asarray(kd)
+
+        # --- New Improper dihedrals ---
+        if "impropertypes" in ff["bonded"]:
+            impropers = onp.genfromtxt(
+                StringIO(ff["bonded"]["impropertypes"]),
+                dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+            ).reshape((-1,))
+
+            improper_lookup = onp.full(
+                (num_species, num_species, num_species, num_species), -1, dtype=int
+            )
+            improper_data = onp.zeros((max([len(impropers), 1]), 2))  # psi0, kpsi
+
+            for idx, improper in enumerate(impropers):
+                i, j, k, l, psi0, ki = improper
+                s1 = mapping[i]
+                s2 = mapping[j]
+                s3 = mapping[k]
+                s4 = mapping[l]
+
+                improper_lookup[s1, s2, s3, s4] = idx
+                improper_lookup[s4, s3, s2, s1] = idx
+                improper_data[idx, :] = onp.asarray([psi0, ki])
+
+            data["bonded"]["impropers"] = jnp.asarray(improper_data)
+            lookup["bonded"]["impropers"] = jnp.asarray(improper_lookup)
+        else:
+            data["bonded"]["impropers"] = jnp.zeros((0, 2))
+            lookup["bonded"]["impropers"] = jnp.full(
+                (num_species, num_species, num_species, num_species), -1, dtype=int
+            )
+
+        data["bonded"]["dihedrals"] = jnp.asarray(dihedral_data)
+        lookup["bonded"]["dihedrals"] = jnp.asarray(dihedrals_lookup)
+
+        data["lj14_scaling"] = ff["nonbonded"].get("lj14_scaling", 1.0)
+
+        return cls(data, lookup, mapping)
+
+    def write_ff(self, fname: str):
+        """Writes the parameters of the force field back into a toml file.
+
+        Args:
+            fname: Path, where the force field should be stored.
+
+        """
+        tomli_w = importlib.import_module("tomli_w")
+
+        reverse_mapping = {
+            value: key for key, value in self._mapping.items()
+        }
+
+        atom_data = [
+            (i, self._lookup["nonbonded"][i])
+            for i in range(self.max_species)
+            if self._lookup["nonbonded"][i] >= 0
+        ]
+        atomtypes = "# name,    species,    mass,        sigma,      epsilon\n"
+        atomtypes += "\n".join(
+            ",".join([
+                f"{reverse_mapping[i]}".rjust(5, " "),
+                f"{i}".rjust(5, " "),
+                f"{self._data['nonbonded'][idx][0] :.3f}".rjust(7, " "),
+                f"{self._data['nonbonded'][idx][1] :.5e}".rjust(9, " "),
+                f"{self._data['nonbonded'][idx][2] :.5e}".rjust(9, " "),
+            ])
+            for i, idx in atom_data
+        )
+        atomtypes += "\n"
 
 
-def prior_potential(prior_fns, pos, neighbor, **dynamic_kwargs):
-    """Evaluates the prior potential for a given snapshot."""
-    sum_priors = 0.
-    if prior_fns is not None:
-        for key in prior_fns:
-            sum_priors += prior_fns[key](pos, neighbor=neighbor,
-                                         **dynamic_kwargs)
-    return sum_priors
+        bond_data = [
+            (i, j, self._lookup["bonded"]["bonds"][i, j])
+            for i, j in itertools.product(range(self.max_species), repeat=2)
+            if self._lookup["bonded"]["bonds"][i, j] >= 0 and i <= j
+        ]
+        bondtypes = "#    i,    j,    b0,    kb\n"
+        bondtypes += "\n".join(
+            ",".join([
+                f"{reverse_mapping[i]}".rjust(5, " "),
+                f"{reverse_mapping[j]}".rjust(5, " "),
+                f"{self._data['bonded']['bonds'][idx][0] :.5f}".rjust(7, " "),
+                f"{self._data['bonded']['bonds'][idx][1] :.1f}".rjust(7, " "),
+            ])
+            for i, j, idx in bond_data
+        )
+        bondtypes += "\n"
+
+        angle_data = [
+            (i, j, k, self._lookup["bonded"]["angles"][i, j, k])
+            for i, j, k in itertools.product(range(self.max_species), repeat=3)
+            if self._lookup["bonded"]["angles"][i, j, k] >= 0 and i <= k
+        ]
+        angletypes = "#    i,    j,    k,    th0,    kth\n"
+        angletypes += "\n".join(
+            ",".join([
+                f"{reverse_mapping[i]}".rjust(5, " "),
+                f"{reverse_mapping[j]}".rjust(5, " "),
+                f"{reverse_mapping[k]}".rjust(5, " "),
+                f"{self._data['bonded']['angles'][idx][0] :.3f}".rjust(7, " "),
+                f"{self._data['bonded']['angles'][idx][1] :.3f}".rjust(7, " "),
+            ])
+            for i, j, k, idx in angle_data
+        )
+        angletypes += "\n"
+
+        max_terms = self._lookup["bonded"]["dihedrals"].shape[-1]
+        dihedraltypes = "#    i,    j,    k,    l,    phase,    kd    pn\n"
+        for nd in range(max_terms):
+            dihedral_idx = [
+                idx if idx[0] < idx[3] else idx[::-1]
+                for idx in itertools.product(range(self.max_species), repeat=4)
+            ]
+
+            # Remove double elements and undefined entries
+            dihedral_idx = set(dihedral_idx)
+            dihedral_data = [
+                (i, j, k, l, self._lookup["bonded"]["dihedrals"][i, j, k, l, nd])
+                for i, j, k, l in dihedral_idx
+                if self._lookup["bonded"]["dihedrals"][i, j, k, l, nd] >= 0
+            ]
+
+            dihedraltypes += "\n".join(
+                ",".join([
+                    f"{reverse_mapping[i]}".rjust(5, " "),
+                    f"{reverse_mapping[j]}".rjust(5, " "),
+                    f"{reverse_mapping[k]}".rjust(5, " "),
+                    f"{reverse_mapping[l]}".rjust(5, " "),
+                    f"{180. * (self._data['bonded']['dihedrals'][idx][0] <= 0) :.2f}".rjust(7, " "),
+                    f"{onp.abs(self._data['bonded']['dihedrals'][idx][0]) :.3f}".rjust(7, " "),
+                    f"{nd + 1}".rjust(4, " "),
+                ])
+                for i, j, k, l, idx in dihedral_data
+            )
+            dihedraltypes += "\n"
+
+        ff_params = {
+            "bonded": {
+                "bondtypes": bondtypes,
+                "angletypes": angletypes,
+                "dihedraltypes": dihedraltypes
+            },
+            "nonbonded": {
+                "atomtypes": atomtypes
+            }
+        }
+
+        with open(fname, "wb") as f:
+            tomli_w.dump(ff_params, f, multiline_strings=True)
+
+    def get_data(self, keys: Union[str, Tuple[Union[str, Tuple[str]]]] = None):
+        """Returns the trainable parameters.
+
+        It is possible to select only a subset of the trainable parameters.
+        For example, by selecting only the bond parameters of the bonded
+        interactions:
+
+        .. code :: python
+
+           >>> selection = (
+           ...     ("bonded", ("bonds",)),
+           ... )
+           >>> ff.get_data(selection)
+
+        Args:
+            keys: Key, or tuple structure of keys corresponding to the partial
+                data that should be returned.
+
+        Returns:
+            Returns the learnable interaction parameters.
+
+        """
+        if keys is None:
+            return self._data
+        if isinstance(keys, str):
+            return {keys: self._data[keys]}
+
+        data = {}
+        for key in keys:
+            if isinstance(key, tuple):
+                data[key[0]] = {}
+                for subkey in key[1]:
+                    data[key[0]][subkey] = self._data[key[0]][subkey]
+            else:
+                data[key] = self._data[key]
+
+        return data
+
+    def set_data(self, data):
+        """Update the learnable interaction parameters.
+
+        In combination with `get_data`, `set_data` enables to learn only
+        parts of the force field.
+
+        Args:
+            data: Dictionary, corresponding to the internal data structure.
+
+        Returns:
+            Returns a new instance of the force field.
+
+        """
+        # TODO: Check whether this avoids leaking tracers
+        new_data = {}
+        for key, item in self._data.items():
+            if isinstance(item, dict):
+                new_data[key] = {k: v for k, v in self._data[key].items()}
+                if key in data.keys():
+                    new_data[key].update(data[key])
+            else:
+                if key in data.keys():
+                    new_data[key] = data[key]
+                else:
+                    new_data[key] = item
+
+        new_lookup = {
+            "bonded": {**self._lookup["bonded"]},
+            "nonbonded": self._lookup["nonbonded"]
+        }
+        new_mapping = {**self._mapping}
+
+        new_force_field = ForceField(new_data, new_lookup, new_mapping)
+        return new_force_field
+
+    @property
+    def max_species(self):
+        """Maximum number of species."""
+        return max(self._mapping.values()) + 1
+
+    def mapping(self, by_name=False, renaming_pattern: List[Tuple[str, str]] = None):
+        """Returns a function that maps atom data into a species number.
+
+        Args:
+            by_name: If true, then the atom name (e. g. ``"CA"``) is used as an
+                identifier. Otherwise, the element symbol (e. g. ``"C"``) is
+                used to look up the species number.
+            renaming_pattern: Translate the atom names between different naming
+                conventions, e.g. from PDB to AMBER.
+
+        Returns:
+            Returns a mapping function that maps atom data into a species
+            number.
+
+        """
+        @prior.rename_atoms(lookup_table=renaming_pattern)
+        def mapping_fn(symbol: int, is_water: bool, name: str = "", residue: str = "", **kwargs):
+            if by_name:
+                if residue == "ALA" and name == "CB":
+                    print(f"Rename ALA CB to CH3")
+                    name = "CH3"
+                if residue == "NME" and name == "C":
+                    print(f"Rename NME C to CH3")
+                    name = "CH3"
+
+                return self._mapping[name]
+
+            if is_water:
+                return self._mapping[symbol + "W"]
+            else:
+                return self._mapping[symbol]
+
+        return mapping_fn
+
+    def get_nonbonded_params(self, s):
+        """Get the nonbonded parameters for a species."""
+        idx = self._lookup["nonbonded"][s]
+        data = self._data["nonbonded"][idx]
+        valid = idx >= 0
+        return data, valid
+
+    def get_bond_params(self, s1, s2):
+        """Get the parameters of a bond between two species."""
+        idx = self._lookup["bonded"]["bonds"][s1, s2]
+        data = self._data["bonded"]["bonds"][idx]
+        valid = idx >= 0
+        return data, valid
+
+    def get_angle_params(self, s1, s2, s3):
+        """Get the parameters of an angle between three species."""
+        idx = self._lookup["bonded"]["angles"][s1, s2, s3]
+        data = self._data["bonded"]["angles"][idx]
+        valid = idx >= 0
+        return data, valid
+
+    def get_dihedral_params(self, s1, s2, s3, s4, multiplicity=None):
+        """Get the parameters of an angle between four species."""
+        # Automatically set the maximum multiplicity
+        if multiplicity is None:
+            max_terms = self._lookup["bonded"]["dihedrals"].shape[-1]
+            multiplicity = jnp.arange(max_terms)
+            params = jax.vmap(
+                self.get_dihedral_params,
+                in_axes=(None, None, None, None, 0),
+                out_axes=-1)(s1, s2, s3, s4, multiplicity)
+            return params
+
+        idx = self._lookup["bonded"]["dihedrals"][s1, s2, s3, s4, multiplicity]
+        data = self._data["bonded"]["dihedrals"][idx]
+        valid = idx >= 0
+        return data, valid, jnp.full_like(s1, multiplicity + 1)
+
+    def get_improper_params(self, s1, s2, s3, s4):
+        """Get the parameters of an improper dihedral between four species."""
+        if "impropers" not in self._lookup["bonded"]:
+            return (None, False)
+        idx = self._lookup["bonded"]["impropers"][s1, s2, s3, s4]
+        if jnp.ndim(idx) == 0:
+            idx = jnp.expand_dims(idx, 0)
+        valid = idx >= 0
+        data = self._data["bonded"]["impropers"][idx]
+        return data, valid
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        structure, lookup, mapping = aux_data
+        data = tree_util.tree_unflatten(structure, children)
+        return cls(data, lookup, mapping)
+
+    def tree_flatten(self):
+        children, structure = tree_util.tree_flatten(self._data)
+        aux_data = (structure, self._lookup, self._mapping)
+        return children, aux_data
+
+@tree_util.register_pytree_node_class
+class Topology:
+    """Class documenting the topology of a system.
+
+    This pytree stores the topological information of a system and provides
+    utilities, to create this information e.g. from an `mdtraj` topology.
+
+    For a simple way to load a topology from a molecular graph, see
+    :func:`Topology.from_mdtraj`.
+
+    Args:
+        num_particles: The number of particles in the system
+        species: Integer or array of species number.
+        names: Optional names of the particles.
+        bond_idx: Array of shape `[B, 2]` with indices of the atoms that span
+            the :math:`B` bonds.
+        angle_idx: Array of shape `[A, 3]` with indices of the atoms that span
+            the :math:`A` angles.
+        dihedral_idx: Array of shape `[D, 4]` with indices of the atoms that
+            span the :math:`D` dihedral angles.
+        improper_dihedral_idx: Array of shape `[D, 4]` with indices of the atoms
+            that span the :math:`D` improper dihedral angles.
+    """
+
+    def __init__(self,
+                 num_particles: int,
+                 species: ArrayLike = None,
+                 names: list[str] = None,
+                 bond_idx: ArrayLike = None,
+                 angle_idx: ArrayLike = None,
+                 dihedral_idx: ArrayLike = None,
+                 improper_dihedral_idx: ArrayLike = None):
+        if bond_idx is None:
+            bond_idx = jnp.zeros((0, 2), dtype=jnp.int_)
+        if angle_idx is None:
+            angle_idx = jnp.zeros((0, 3), dtype=jnp.int_)
+        if dihedral_idx is None:
+            dihedral_idx = jnp.zeros((0, 4), dtype=jnp.int_)
+        if improper_dihedral_idx is None:
+            improper_dihedral_idx = jnp.zeros((0, 4), dtype=jnp.int_)
+
+        self._num_particles = num_particles
+        self._species = species
+        self._bond_idx = bond_idx
+        self._angle_idx = angle_idx
+        self._dihedral_idx = dihedral_idx
+        self._improper_dihedral_idx = improper_dihedral_idx
+        self._names = names
+
+    def get_padded_topology(self,
+                            num_particles: int,
+                            max_species: int = 1,
+                            max_bonds: int = 0,
+                            max_angles: int = 0,
+                            max_dihedrals: int = 0,
+                            max_improper_dihedrals: int = 0):
+        """Returns a new topology with padded graph data.
+
+        When dealing with systems that have a different number of bonds, etc.
+        padding the topologies enables to still batch-process the systems.
+        """
+
+        # Create a new data structure by padding the lists
+        # TODO: Check that no files have less angles than given.
+        #       Pad all the indices and replace the old invalid particle indices
+        #       by the new num_atoms
+        # TODO: Replace the invalid indices by the new num_particles
+        raise NotImplementedError("Padding not yet implemented")
+
+    def get_atom_species(self, idx=None):
+        """Returns the species numbers for the atoms of the system."""
+        if self._species is None:
+            return None
+
+        if idx is None:
+            idx = jnp.arange(self._num_particles)
+        if self._species.ndim == 0:
+            species = jnp.full_like(idx, self._species, dtype=jnp.int_)
+        else:
+            species = self._species[idx]
+        species = jnp.where(
+            idx < self._num_particles, species, -1
+        )
+        return species
+
+    def get_bonds(self):
+        """Returns the indices, species and mask for all angles."""
+        idxs = self._bond_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
+        species = jnp.stack(
+            (
+                self.get_atom_species(idxs[:, 0]),
+                self.get_atom_species(idxs[:, 1])
+            ), axis=-1
+        )
+        mask = idxs[:, 0] < self._num_particles
+        return idxs, species, mask
+
+    def get_angles(self):
+        """Returns the indices, species and mask for all angles."""
+        idxs = self._angle_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
+        species = jnp.stack(
+            (
+                self.get_atom_species(idxs[:, 0]),
+                self.get_atom_species(idxs[:, 1]),
+                self.get_atom_species(idxs[:, 2])
+            ), axis=-1
+        )
+        mask = idxs[:, 0] < self._num_particles
+        return idxs, species, mask
+
+    def get_dihedrals(self):
+        """Returns the indices, species and mask for all angles."""
+        idxs = self._dihedral_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
+        species = jnp.stack(
+            (
+                self.get_atom_species(idxs[:, 0]),
+                self.get_atom_species(idxs[:, 1]),
+                self.get_atom_species(idxs[:, 2]),
+                self.get_atom_species(idxs[:, 3])
+            ), axis=-1
+        )
+        mask = idxs[:, 0] < self._num_particles
+        return idxs, species, mask
+
+    def get_impropers(self):
+        """Returns the indices, species and mask for all improper dihedrals."""
+        idxs = self._improper_dihedral_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
+        species = jnp.stack(
+            (
+                self.get_atom_species(idxs[:, 0]),
+                self.get_atom_species(idxs[:, 1]),
+                self.get_atom_species(idxs[:, 2]),
+                self.get_atom_species(idxs[:, 3])
+            ), axis=-1
+        )
+        mask = idxs[:, 0] < self._num_particles
+        return idxs, species, mask
+
+    def prune_topology(self, force_field: ForceField):
+        """Remove all bonds, angles, etc. not parametrized by the force field.
+
+        Args:
+            force_field: Force field to identify, which bonds, etc. are
+                parametrized.
+
+        Returns:
+            Returns a topology with potentially reduced size.
+        """
+
+        bonds_idx, species, mask = self.get_bonds()
+        mask = onp.logical_and(mask, force_field.get_bond_params(*species.T)[1])
+        bonds_idx = bonds_idx[mask]
+
+        angle_idx, species, mask = self.get_angles()
+        mask = onp.logical_and(mask, force_field.get_angle_params(*species.T)[1])
+        angle_idx = angle_idx[mask]
+
+        dihedral_idx, species, mask = self.get_dihedrals()
+        ff_mask = force_field.get_dihedral_params(*species.T)[1]
+        mask = onp.logical_and(mask, ff_mask.any(axis=1))
+        dihedral_idx = dihedral_idx[mask]
+
+        improper_idx, species, mask = self.get_impropers()
+        if improper_idx is not None:
+            mask = onp.logical_and(mask, force_field.get_improper_params(*species.T)[1])
+            improper_idx = improper_idx[mask]
+        else:
+            improper_idx = None
+
+        top = Topology(
+            self._num_particles, self._species, bonds_idx, angle_idx,
+            dihedral_idx, improper_idx
+        )
+        return top
+
+    @classmethod
+    def concatenate(cls, *topologies):
+        """Concatenate the topologies. """
+        raise NotImplementedError(
+            "Concatenating topologies is not yet implemented.")
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(*aux_data, *children)
+
+    def tree_flatten(self):
+        children = (
+            self._species, self._bond_idx, self._angle_idx,
+            self._dihedral_idx, self._improper_dihedral_idx,
+        )
+        aux_data = (
+            self._num_particles,
+        )
+        return children, aux_data
+
+    @classmethod
+    def from_mdtraj(cls, topology, mapping=None, include_impropers=False):
+        """Creates a topology instance from a ``mdtraj`` topology instance.
+
+        This function uses mdtraj to create a graph-representation of the
+        system. It then discovers bonds, angles and dihedral angles by searching
+        for all simple paths between tuples with corresponding length.
+
+        Args:
+            topology: `mdtraj` topology object
+            mapping: Function to map the atom data, e.g., atom symbol, to a
+                species number.
+
+        Returns:
+            Returns a JAX topology based on the ``mdtraj`` topology.
+
+        """
+
+        graph = topology.to_bondgraph()
+        nx = importlib.import_module("networkx")
+
+        if mapping is None:
+            mapping = lambda **kwargs: kwargs["number"]
+
+        species = [
+            mapping(
+                number=n.element.number, name=n.name,
+                symbol=n.element.symbol, code=n.residue.code, residue=n.residue.name,
+                is_water=n.residue.is_water, is_protein=n.residue.is_protein
+            )
+            for n in graph.nodes
+        ]
+
+        # New Addition: String of particle names
+        names = [n.name for n in graph.nodes]
+
+        # Retrieve topology from graph
+        bonds = []
+        angles = []
+        dihedrals = []
+        impropers = []
+
+        # Discover all molecules (connected graphs)
+        for mol in nx.k_edge_subgraphs(graph, 1):
+            # Find all bonds, angles and dihedrals between pairs of atoms
+            for atm1, atm2 in itertools.combinations(mol, 2):
+                if not nx.has_path(graph, atm1, atm2):
+                    # Pairs not part of the same molecule
+                    continue
+
+                all_paths = nx.all_simple_paths(graph, atm1, atm2, cutoff=4)
+                for path in all_paths:
+                    # Sort the path and always start with the lowest numbered
+                    # species
+                    if species[path[0].index] > species[path[-1].index]:
+                        path.reverse()
+
+                    # Identify bonds, angles and dihedrals
+                    if len(path) == 2:
+                        bonds.append([a.index for a in path])
+                    elif len(path) == 3:
+                        angles.append([a.index for a in path])
+                    elif len(path) == 4:
+                        dihedrals.append([a.index for a in path])
+
+        if include_impropers:
+            # Specific hard coded improper (N–CA–CB–C)
+            improper_idxs = onp.array([[3, 4, 5, 6]], dtype=jnp.int32)
+            impropers.extend(improper_idxs.tolist())
+        else:
+            impropers = None
+
+        return cls(
+            len(species),
+            species=jnp.asarray(species),
+            bond_idx=jnp.asarray(bonds),
+            angle_idx=jnp.asarray(angles),
+            dihedral_idx=jnp.asarray(dihedrals),
+            improper_dihedral_idx=jnp.asarray(impropers) if include_impropers else None,
+            names=names,
+        )
+
+
+def init_improper_dihedral_potential(displacement_fn, topology, force_field):
+    """Initializes all improper dihedral-potentials for the given topology. """
+    improper_idx, improper_species, improper_mask = topology.get_impropers()
+    if improper_idx is None:
+        return None, None
+
+    improper_params, mask = force_field.get_improper_params(
+        improper_species[:, 0], improper_species[:, 1], improper_species[:, 2],
+        improper_species[:, 3]
+    )
+
+    psi0 = improper_params[:, 0]
+    kpsi = jnp.where(
+        jnp.logical_and(mask, improper_mask), improper_params[:, 1], 0.0
+    )
+
+    bond_potential = harmonic_dihedral(
+        displacement_fn, improper_idx, psi0=psi0, kpsi=kpsi)
+    return bond_potential, jnp.logical_and(mask, improper_mask)
+
+
+def init_prior_potential(displacement_fn,
+                         mask_bonded: bool = True,
+                         nonbonded_type: None | str = "repulsion",
+                         r_onset: float = 0.45,
+                         r_cutoff: float = 0.5):
+    """Initializes the prior template.
+
+    Args:
+        displacement_fn: `jax_md` displacement function
+        mask_bonded: Excluded non-bonded interactions between bonded atoms via
+            masking them in the neighbor list. This might be ineffective if the
+            number of bonds is very large.
+        nonbonded_type: Type of the nonbonded interactions. Possible values are
+            ``"repulsion"``, ``"lennard_jones"``, ``"truncated_lennard_jones"``.
+        r_onset: Distance to start smoothing the nonbonded interactions to 0.
+        r_cutoff: Cutoff distance of the neighbor list.
+
+    """
+    def prior_potential_template(topology: Topology,
+                                 force_field: ForceField):
+        # Bonded
+        bond_potential, bond_mask = prior.init_bond_potential(
+            displacement_fn, topology, force_field)
+        angle_potential, angle_mask = prior.init_angle_potential(
+            displacement_fn, topology, force_field)
+        dihedral_potential, dihedral_mask = prior.init_dihedral_potential(
+            displacement_fn, topology, force_field)
+        improper_potential, improper_mask = init_improper_dihedral_potential(
+            displacement_fn, topology, force_field)
+
+        if nonbonded_type is not None:
+            # Nonbonded
+            nonbonded_potential_fn = prior.init_nonbonded_potential(
+                displacement_fn, topology, force_field, nonbonded_type,
+                r_onset=r_onset, r_cutoff=r_cutoff
+            )
+
+        def potential_fn(position, neighbor=None, **kwargs):
+            pot = 0.0
+
+            if bond_potential is not None:
+                pot += bond_potential(position)
+            if angle_potential is not None:
+                pot += angle_potential(position)
+            if dihedral_potential is not None:
+                pot += dihedral_potential(position)
+            if improper_potential is not None:
+                pot += improper_potential(position)
+
+            if nonbonded_type is not None:
+                if mask_bonded:
+                    # Exclude pairs connected via bonds and angles from the
+                    # neighbor list to exclude them also from beeing considered
+                    # in the nonbonded potential computation
+                    neighbor = sparse_graph.subtract_topology_from_neighbor_list(
+                        neighbor, topology, bond_mask=bond_mask,
+                        angle_mask=angle_mask, dihedral_mask=dihedral_mask
+                    )
+                    pot += nonbonded_potential_fn(position, neighbor)
+                else:
+                    raise NotImplementedError(
+                        "Currently, only masking is implemented to exclude "
+                        "non-bonded interactions from bonded neighbors."
+                    )
+
+            return pot
+        return potential_fn
+    return prior_potential_template

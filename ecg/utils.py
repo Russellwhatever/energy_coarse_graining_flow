@@ -4,6 +4,7 @@ import re
 import dataclasses
 
 from pathlib import Path
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -15,9 +16,9 @@ from flowjax.utils import arraylike_to_array
 import optax
 
 from ecg.train.optimizer import OptimizerConfig, get_optimizer
-from ecg.chemtrain_mod.custom_prior_new import Topology
+from ecg.chemtrain_mod.custom_prior import Topology
 
-from typing import Callable
+from typing import Callable, NamedTuple
 from jaxtyping import Array, ArrayLike, Float
 
 
@@ -29,7 +30,7 @@ class Dimensions:
         x_dim: Dimension of atomistic coordinates.
         z_dim: Dimension of coarse-grained coordinates.
         num_dofs: Number of removed degrees of freedom to fix roto-translational
-            invariance. Defaults to None.
+            invariance. Defaults to 0.
     """
 
     x_dim: int
@@ -117,6 +118,7 @@ def init_map_x_to_r(positions: ArrayLike,
     fixed_idx = fix_coord_idxs - num_removed_before_each
 
     @jax.jit
+    @partial(jnp.vectorize, signature='(n)->(m,3)')
     def map_x_to_r(x):
         assert x.shape == (positions.size - fixed_idx.size,), (
             'Input x must have shape '
@@ -151,19 +153,17 @@ def init_optimizer(learning_rate: float,
 
 def load_beta_array(beta: Float,
                     base_path: str = '../datasets/aldp/',
-                    return_beta: bool = False) -> Array | tuple[Array, Float]:
+                    ) -> tuple[Array, Float]:
     """
     Load the numpy array for the given beta, or the next higher available beta.
 
     Args:
         beta: The beta value to load.
         base_path: Directory containing the beta files.
-        return_beta: If True, also return the actual beta value of the loaded 
-                     file.
 
     Returns:
-        Numpy array corresponding to the requested or next-highest beta.
-        If `return_beta` is True, also returns the actual beta value.
+        Numpy array corresponding to the requested or next-highest beta and the 
+        actual beta value.
     """
 
     pattern = re.compile(r'beta([0-9]*\.?[0-9]+)_aldp_samples\.npy')
@@ -183,11 +183,10 @@ def load_beta_array(beta: Float,
     # Find the next-highest beta
     for b_val, path in beta_files:
         if b_val >= beta:
-            return (np.load(path), b_val) if return_beta else np.load(path)
-
+            return (np.load(path), b_val)
     # If no higher beta, return the largest available
     b_val, path = beta_files[-1]
-    return (np.load(path), b_val) if return_beta else np.load(path)
+    return (np.load(path), b_val)
 
 
 def create_output_dirs(folder_name: str | None,
@@ -252,3 +251,17 @@ def bond_and_angle_names(topology: Topology) -> tuple[list[str], list[str]]:
     ]
 
     return bond_names, angle_names
+
+
+class PseudoState(NamedTuple):
+    """Pseudo state of a molecular system for chemtrain and mdtraj.
+
+    Args:
+        position: Particle positions (chemtrain)
+        xyz: Alias for position (mdtraj)
+    """
+    position: ArrayLike
+
+    @property
+    def xyz(self) -> ArrayLike:
+        return self.position

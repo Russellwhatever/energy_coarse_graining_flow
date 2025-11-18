@@ -1,4 +1,4 @@
-"""Energy-based coarse-graining for flows: Gaussian Mixture Example."""
+"""Energy-based coarse-graining for flows: Alanine Dipeptide Example."""
 import jax
 from jax import tree, random, numpy as jnp
 
@@ -6,60 +6,71 @@ import matplotlib.pyplot as plt
 
 import equinox as eqx
 import paramax
-import optax
 
-from ecg.targets.gmm import GMM
+from ecg.targets.aldp import AlanineDipeptide
 from ecg.train.losses import EnergyLoss
 from ecg.models import initialize_model
 from ecg.train.loops import fit_to_key_beta_based_loss, TemperingScheme
-from ecg.utils import Dimensions, create_output_dirs
+from ecg.utils import Dimensions, init_optimizer, create_output_dirs
 
 jax.config.update('jax_enable_x64', True)
 
-folder_name = 'GMM_10D/'
+folder_name = 'ALDP/'
 print(folder_name or '')
 
-seeds = {'key': 0, 'gmm': 6, 'cond': 1}
-dimensions = Dimensions(x_dim=20, z_dim=10)
-num_components = 3
-cluster_std = 0.1
-cond_std = 0.1
+seed = 4
+# Fix coordinates to remove roto-translational invariance
+fix_coord_idxs = jnp.array([9, 10, 11, 12, 13, 19], dtype=jnp.int32)
+dimensions = Dimensions(x_dim=24, z_dim=15,
+                        dofs=fix_coord_idxs)
+
+temperature = 330 # Kelvin
 
 # Train input:
 epochs = 1000
 num_samples = 10000
 plot_training = True
-initial_train = 20
+initial_train = 15
 
 # Model input:
-Phi_init = jnp.identity(dimensions.x_dim) * 0.2
+# Give small initial bias towards z in transformation Phi_init to prevent
+# singular matrix A_phi
+Phi_init =  jnp.insert(jnp.eye(dimensions.num_atoms-2), 2,
+                     jnp.eye(dimensions.num_atoms-2)[2], axis=0) * 0.25
+
+init_z_bias_idx = jnp.array([15, 16, 17, 0, 1, 2, 3, 4, 5, 6, 18, 19, 20, 7, 8,
+                    9, 10, 11, 12, 13, 14, 21, 22, 23], dtype=jnp.int32)
+# Restrain CA_z coordinate to be negative
+restrain_idxs = jnp.array([-9], dtype=jnp.int32)
 
 layers=8
-nn_depth=2
-nn_width=40
+nn_depth=4
+nn_width=64
 knots=8
-interval = 4.
-cond_nn_depth = 2
-cond_nn_width = 40
+interval = 4
+cond_nn_depth = 8
+cond_nn_width = 90
 
 # Optimizer input:
-learning_rate = 1e-4
-optimizer = optax.adam(learning_rate = learning_rate)
+learning_rate = 5e-4
+optimizer = init_optimizer(learning_rate = learning_rate,
+                           dynamic_grad_norm_factor=5.,
+                           dynamic_grad_norm_window=50,
+                           )
 
 # Tempering input:
-start_beta = 0.001
+start_beta = 0.0001
 target_beta = 1.0
 
 temp_dict = {
              'method': 'adaptive',
-             'delta_kl': 0.1,
-             'delta_beta': 0.02,
-             'num_samples': 10000,
+             'delta_kl': 0.2,
+             'delta_beta': 0.005,
+             'num_samples': 20000,
             }
 
 # Plotting input:
-plotted_dims = [0, 1, 2]
-annotate_matrix = True if dimensions.x_dim <= 10 else False
+num_plot_samples = 480000
 
 # Save path inputs:
 save_params_path = f'outputs/trained_parameter/{folder_name}'
@@ -68,14 +79,15 @@ load_params_path = None
 create_output_dirs(
     folder_name,
     save_params_path,
-    subdirs=['contours',
+    subdirs=['dihedrals',
              'losses',
              'marginals',
+             'observables',
              'transformations']
 )
 
-key = random.key(seeds['key'])
-target = GMM(seeds, dimensions, num_components, cluster_std, cond_std)
+key = random.key(seed)
+target = AlanineDipeptide(temperature, fix_coord_idxs=fix_coord_idxs)
 key, init_model_key, init_eval_key = random.split(key, 3)
 
 model = initialize_model(dimensions,
@@ -89,6 +101,9 @@ model = initialize_model(dimensions,
                          knots=knots,
                          interval=interval,
                          load_params_path=load_params_path,
+                         perm_idxs=init_z_bias_idx,
+                         restrain_idxs=restrain_idxs,
+                         per_atom=True,
                         )
 
 params, static = eqx.partition(
@@ -102,8 +117,8 @@ print('Number of parameters:', params_count)
 
 target.plot(model,
             init_eval_key,
-            dims=plotted_dims,
-            annotate_matrix=annotate_matrix,
+            start_beta,
+            num_samples=num_plot_samples,
             save_name='init',
             folder_name=folder_name)
 
@@ -152,8 +167,8 @@ for i, _ in enumerate(Tempering.loop()):
     if plot_training:
         target.plot(model,
                     eval_key,
-                    dims=plotted_dims,
-                    annotate_matrix=annotate_matrix,
+                    beta,
+                    num_samples=num_plot_samples,
                     save_name=f'train_{beta:.5f}',
                     folder_name=folder_name)
 
@@ -186,10 +201,17 @@ plt.ylabel('Gradient Norm')
 if folder_name is not None:
     plt.savefig(f'outputs/figures/{folder_name}losses/Grad_norm.png')
 
-key, final_eval_key = random.split(key, 2)
+key, final_plot_key, final_eval_key = random.split(key, 3)
 target.plot(model,
-            final_eval_key,
-            dims=plotted_dims,
-            annotate_matrix=annotate_matrix,
+            final_plot_key,
+            target_beta,
+            num_samples=num_plot_samples,
             save_name='final',
             folder_name=folder_name)
+
+target.evaluate(model,
+                final_eval_key,
+                target_beta,
+                num_samples=num_plot_samples,
+                save_name='final',
+                folder_name=folder_name)
